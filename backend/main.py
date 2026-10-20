@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Optional, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,7 +22,7 @@ ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 app = FastAPI(title="Cold Call Copilot Backend")
 
-# Enable CORS for the frontend
+# Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -79,15 +79,24 @@ def save_stage(call_id: str, req: StageRecordRequest):
 
 @app.post("/calls/{call_id}/end")
 def end_call(call_id: str, req: EndCallRequest):
-    stages = supabase.table("call_stages").select("*").eq("call_id", call_id).order("stage_number").execute().data
+    stages_res: Any = supabase.table("call_stages").select("*").eq("call_id", call_id).order("stage_number").execute()
+    stages = stages_res.data or []
 
     summary = f"Call ended with status: {req.final_outcome}"
     if ai_client:
         if stages:
-            formatted_notes = "\n".join([
-                f"Stage {s['stage_number']} ({s['stage_name']}): Outcome='{s.get('stage_outcome', '')}', Verbatim='{s.get('prospect_verbatim', '')}'"
-                for s in stages
-            ])
+            formatted_notes_list = []
+            for item in stages:
+                data_dict: dict = dict(item)  # type: ignore
+                s_num = str(data_dict.get("stage_number", ""))
+                s_name = str(data_dict.get("stage_name", ""))
+                s_outcome = str(data_dict.get("stage_outcome", ""))
+                s_verbatim = str(data_dict.get("prospect_verbatim", ""))
+                formatted_notes_list.append(
+                    f"Stage {s_num} ({s_name}): Outcome='{s_outcome}', Verbatim='{s_verbatim}'"
+                )
+            formatted_notes = "\n".join(formatted_notes_list)
+
             prompt = (
                 f"Live cold call notes:\n{formatted_notes}\n\n"
                 f"Final Outcome: {req.final_outcome}\n\n"
@@ -101,7 +110,6 @@ def end_call(call_id: str, req: EndCallRequest):
             )
 
         candidate_models = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-pro"]
-        
         for model_name in candidate_models:
             try:
                 ai_res = ai_client.models.generate_content(
